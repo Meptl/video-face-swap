@@ -3,6 +3,5 @@ CFLAGS=`pkg-config opencv --cflags --libs` -Wall
 
 all:
 	$(CXX) $(CFLAGS) face-replace.cpp -o video-face-swap
-default:
+clean:
 	rm video-face-swap
-

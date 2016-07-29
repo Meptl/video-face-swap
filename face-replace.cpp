@@ -101,7 +101,6 @@ face_data_t face_detect(cv::Mat image) {
         if (REQ_EYES && eyes.size() == 0)
             continue;
 
-        std::cout << eyes.size() << std::endl;
         filter_largest2(eyes);
 
         std::pair<cv::Rect, std::vector<cv::Rect>> face_datum(face_region, eyes);
@@ -174,14 +173,18 @@ std::pair<int, int> estimate_angle(std::vector<cv::Rect> &eyes) {
     int width_delta = eye0.x - eye1.x;
     double angle = atan((double)height_delta / width_delta);
 
+    angle *= 180.0 / M_PI;
+
     printf("%d %d %f\n", height_delta, width_delta, angle);
 
-    return std::pair<int, int>(0, 0);
+    return std::pair<int, int>(-angle, 0);
 }
 
 #define SCALE 1.1
-#define OFFSET 0.15
-void face_replace(cv::Mat image, cv::Mat replacement, face_data_t &face_data)
+#define OFFSETX 0.1
+#define OFFSETY 0.2
+#define ROT_THRESHOLD 0
+void face_replace(cv::Mat &image, cv::Mat &overlay, face_data_t &face_data)
 {
     for (uint i = 0; i < face_data.size(); i++) {
         cv::Rect face_region = face_data[i].first;
@@ -190,39 +193,56 @@ void face_replace(cv::Mat image, cv::Mat replacement, face_data_t &face_data)
         int w = face_region.width;
         int h = face_region.height;
 
-        // Attempt face rotation
-        /*
+        // final object to be overlayed
+        cv::Mat modded_overlay = overlay.clone();
+        cv::Size modded_size = modded_overlay.size();
+
+        // Resize overlay to have same height as faces in image
+        modded_size = modded_overlay.size();
+        double aspect_ratio = (double)modded_size.height / modded_size.width;
+        cv::Mat resized;
+        cv::resize(modded_overlay, resized, cv::Size(w * SCALE, w * aspect_ratio * SCALE));
+
+        modded_overlay = resized;
+        modded_size = modded_overlay.size();
+
+        // Rotate face
         if (face_data[i].second.size() == 2) {
             std::pair<double, double> head_angles = estimate_angle(face_data[i].second);
             double head_tilt = head_angles.first;
-            cv::Point2f re_center(replacement.cols/2.0F, replacement.rows/2.0F);
-            cv::Mat rot_mat = getRotationMatrix2D(re_center, 90, 1.0);
-            cv::Mat dst;
-            warpAffine(replacement, dst, rot_mat, replacement.size());
-            replacement = dst;
-        }
-        */
 
-        // Resize replacement to have same height as image
-        // Modify by SCALE
-        cv::Size re_size = replacement.size();
-        double aspect_ratio = (double)re_size.height / re_size.width;
-        cv::Mat resized;
-        cv::resize(replacement, resized, cv::Size(w * SCALE, w * aspect_ratio * SCALE));
-        re_size = resized.size();
+            if (head_tilt > ROT_THRESHOLD || head_tilt < -ROT_THRESHOLD) {
+                cv::Point2f center(modded_overlay.cols/2.0F, modded_overlay.rows/2.0F);
+                cv::Mat rot = getRotationMatrix2D(center, head_tilt, 1.0);
+
+                // Get rotated bounding box
+                cv::Rect bbox = cv::RotatedRect(center, modded_size, head_tilt).boundingRect();
+
+                rot.at<double>(0, 2) += bbox.width / 2.0 - center.x;
+                rot.at<double>(1, 2) += bbox.height / 2.0 - center.y;
+
+                // output to larger size to guarentee no cropping
+                cv::Mat dst;
+                warpAffine(modded_overlay, dst, rot, bbox.size());
+                modded_overlay = dst;
+                modded_size = modded_overlay.size();
+            }
+        }
+
+
 
         // Copy to original image
-        // Offset the replacement slightly to cover head.
-        cv::Point location(x - re_size.width * OFFSET, y - re_size.height * OFFSET);
-        if (replacement.channels() == 4) {
-            overlay_image(&image, &resized, location);
+        // Offset the overlay slightly to cover head.
+        cv::Point location(x - modded_size.width * OFFSETX, y - modded_size.height * OFFSETY);
+        if (overlay.channels() == 4) {
+            overlay_image(&image, &modded_overlay, location);
         } else {
-            crop_overlay(image, resized, location);
-            re_size = resized.size(); // cropping has changed size.
+            crop_overlay(image, modded_overlay, location);
+            modded_size = modded_overlay.size(); // cropping has changed size.
             cv::Rect replace_region(cv::max(location.x, 0),
                                     cv::max(location.y, 0),
-                                    re_size.width, re_size.height);
-            resized.copyTo(image(replace_region));
+                                    modded_size.width, modded_size.height);
+            modded_overlay.copyTo(image(replace_region));
         }
     }
 }
@@ -236,18 +256,18 @@ int main(int argc, char *argv[])
 
     // Read image
     cv::Mat image = cv::imread(argv[1], cv::IMREAD_UNCHANGED);
-    cv::Mat replacement = cv::imread(argv[2], cv::IMREAD_UNCHANGED);
+    cv::Mat overlay = cv::imread(argv[2], cv::IMREAD_UNCHANGED);
     if (!image.data) {
         printf("Error loading image %s\n", argv[1]);
         return 2;
     }
-    if (!replacement.data) {
+    if (!overlay.data) {
         printf("Error loading image %s\n", argv[2]);
         return 2;
     }
 
     face_data_t face_data = face_detect(image);
-    face_replace(image, replacement, face_data);
+    face_replace(image, overlay, face_data);
 
     cv::namedWindow("image", CV_WINDOW_AUTOSIZE);
     cv::imshow("image", image);
